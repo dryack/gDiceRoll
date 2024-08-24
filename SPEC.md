@@ -16,6 +16,32 @@
 * Clients will expect a RESTful API
 * In the future clients should instead be able to utilize gRPC
 * Provide a web admin interface that can, among other things, display realtime dice roll requests, logs, metrics, and statistics relating to the use of the server
+### Deployment and Scalability
+* The service is designed to run multiple instances in parallel
+* Support for rolling deployments and continuous deployment is required
+* Service instances must be stateless, with all persistent data stored in external services
+### External Dependencies
+* PostgreSQL database for persistent storage
+  - Independent of the gDiceRoll service deployment
+  - Must be accessible by all service instances
+* DragonflyDB for caching
+  - Independent of the gDiceRoll service deployment
+  - Must be accessible by all service instances
+### State Management
+* No critical state should be held within service instances
+* All persistent data and shared state must be managed through the external database or cache
+* Session management, if required, should use distributed session storage (e.g., in DragonflyDB)
+### Load Balancing
+* Implement a load balancing solution to distribute requests across service instances
+* Ensure the load balancer is aware of instance health and can route traffic accordingly
+### Service Discovery
+* Implement a service discovery mechanism to allow instances to locate the database, cache, and other required services
+### Consistency
+* Implement appropriate locking or versioning mechanisms to handle concurrent updates to shared data
+### Monitoring and Logging
+* Centralized logging solution to aggregate logs from all service instances
+* Distributed tracing to track requests across multiple instances
+* Health check endpoints for each service instance
 ### DSL
 * Utilize PEMDAS to resolve the order of operations in a dice roll expression
 * Allow flags on a dice roll expression, which are signified by a `#` followed by two or three alphabetic characters (ie. #nz or #gnz)
@@ -114,10 +140,18 @@ Explanation: This alternative has a more peaked distribution. It's more likely t
     3. Ensure we've got a mechanism to manually invalidate cache entries when necessary (if we change the algorithms we use to compute statistics for example)
     4. In the event of an inconsistency between database and cache, we will recompute the result and store in both locations as normal
   * Implement logging/monitoring of cache hits/misses, etc.
+  * Rely on TTL (Time To Live) for cache entry expiration
+  * Update cache entries when new calculations are performed
+  * No additional cache invalidation mechanism required at this time
 * Database:
   * PostgresSQL (probably using JSON blobs for results storage)
   * Use connection pooling
-* Ensure the statistical system is easily extensible; this must include the Monte Carlo simulation as well
+  * Database Migrations
+    * Use a versioned migration tool (e.g., golang-migrate, goose)
+    * Run migrations as a separate process before deploying new instances
+    * Ensure migration processes are idempotent
+    * Implement version checking during application startup to ensure compatibility with the current database schema
+    * Ensure the statistical system is easily extensible; this must include the Monte Carlo simulation as well
 * Documentation:
   * A complete guide to using the DSL
   * API docs
@@ -146,3 +180,18 @@ Explanation: This alternative has a more peaked distribution. It's more likely t
 * Use github.com/alecthomas/participle/v2 for DSL definition
 * Admin Website:
   * Utilize Argon2 and JWT for logging in, with a Postgres user table backing the process
+### Instance Health
+* Implement a basic health check endpoint for each service instance
+* Health check should verify:
+  - Database connectivity
+  - Cache connectivity
+  - Overall service status
+* Use health checks to support rolling deployments and updates
+### Future Considerations
+* Rate limiting may be implemented in the future if needed
+* More advanced monitoring and disaster recovery mechanisms may be added as the system scales
+### State Management and Consistency
+* Implement database-level locking mechanisms for critical operations
+* Use existing records from cache or database when available
+* Implement a simple versioning or timestamping system for cached and database records
+* No additional leader election mechanism required
