@@ -1,0 +1,1 @@
+[] admin dashboard accessible without logging in

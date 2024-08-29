@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>gDiceRoll Admin</title>
+</head>
+<body>
+<header>
+    <h1>gDiceRoll Admin</h1>
+</header>
+<main>
+    <p>Debug: Current template is {{.content}}</p>
+    {{if eq .content "login.html"}}
+        {{template "login" .}}
+    {{else if eq .content "dashboard.html"}}
+        {{template "dashboard" .}}
+    {{end}}
+</main>
+</body>
+</html>
