@@ -21,15 +21,16 @@ func (h *AdminHandler) LoginPage(c *gin.Context) {
 }
 
 func (h *AdminHandler) Login(c *gin.Context) {
+	log.Println("Login function called")
 	username := c.PostForm("username")
 	password := c.PostForm("password")
 	log.Printf("Login attempt: username=%s, password=%s", username, password)
 
 	if username == "admin" && password == "password" {
-		// log.Println("Login successful, redirecting to dashboard")
-		c.Redirect(http.StatusSeeOther, "/admin/dashboard")
+		log.Println("Login successful, redirecting to dashboard")
+		c.Redirect(http.StatusSeeOther, "http://localhost:8185/admin/dashboard")
 	} else {
-		// log.Println("Login failed, re-rendering login page with error")
+		log.Println("Login failed, re-rendering login page with error")
 		c.HTML(http.StatusUnauthorized, "layout.html", gin.H{
 			"content": "login.html",
 			"error":   "Invalid credentials",
@@ -38,9 +39,10 @@ func (h *AdminHandler) Login(c *gin.Context) {
 }
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
-	// log.Println("Rendering dashboard page")
+	log.Printf("Dashboard function called. Method: %s, Path: %s", c.Request.Method, c.Request.URL.Path)
+
 	c.HTML(http.StatusOK, "layout.html", gin.H{
 		"content": "dashboard.html",
-		"message": "This is a test message from the dashboard handler",
+		"message": "Welcome to the dashboard!",
 	})
 }
