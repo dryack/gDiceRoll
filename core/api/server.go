@@ -3,26 +3,30 @@ package api
 import (
 	"context"
 	"fmt"
+	"github.com/dryack/gDiceRoll/core/session"
+	"github.com/jackc/pgx/v4"
 	"html/template"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/dryack/gDiceRoll/core/admin"
+	"github.com/dryack/gDiceRoll/core/user"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/knadh/koanf/v2"
 	"github.com/redis/go-redis/v9"
 )
 
 type Server struct {
-	config       *koanf.Koanf
-	router       *gin.Engine
-	adminHandler *admin.AdminHandler
-	templates    *template.Template
-	cache        *redis.Client
-	db           *pgxpool.Pool
+	config         *koanf.Koanf
+	router         *gin.Engine
+	adminHandler   *admin.AdminHandler
+	templates      *template.Template
+	cache          *redis.Client
+	db             *pgxpool.Pool
+	userManager    *user.UserManager
+	sessionManager *session.SessionManager
 }
 
 func NewServer(cfg *koanf.Koanf) (*Server, error) {
@@ -61,16 +65,8 @@ func NewServer(cfg *koanf.Koanf) (*Server, error) {
 	dbPassword := cfg.String("postgres.password")
 	dbName := cfg.String("postgres.dbname")
 
-	// DEBUG
-	// fmt.Printf("Debug: postgres.host=%s\n", dbHost)
-	// fmt.Printf("Debug: postgres.port=%s\n", dbPort)
-	// fmt.Printf("Debug: postgres.user=%s\n", dbUser)
-	// fmt.Printf("Debug: postgres.dbname=%s\n", dbName)
-	// Don't print the password for security reasons
-
 	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		dbUser, dbPassword, dbHost, dbPort, dbName)
-	// fmt.Printf("Connecting to Postgres at postgres://%s:****@%s:%s/%s?sslmode=disable\n", dbUser, dbHost, dbPort, dbName) // DEBUG
 
 	dbPool, err := pgxpool.Connect(context.Background(), dbURL)
 	if err != nil {
@@ -80,12 +76,17 @@ func NewServer(cfg *koanf.Koanf) (*Server, error) {
 		fmt.Println("Successfully connected to Postgres")
 	}
 
+	userManager := user.NewUserManager(dbPool)
+	sessionManager := session.NewSessionManager(cache, dbPool)
+
 	s := &Server{
-		config:       cfg,
-		router:       router,
-		adminHandler: adminHandler,
-		cache:        cache,
-		db:           dbPool,
+		config:         cfg,
+		router:         router,
+		adminHandler:   adminHandler,
+		cache:          cache,
+		db:             dbPool,
+		userManager:    userManager,
+		sessionManager: sessionManager,
 	}
 	s.setupRoutes()
 	return s, nil
@@ -102,12 +103,149 @@ func (s *Server) setupRoutes() {
 
 	s.router.GET("/api/hello", s.handleHello)
 
+	// User registration and login routes
+	s.router.POST("/api/register", s.handleRegister)
+	s.router.POST("/api/login", s.handleLogin)
+	s.router.POST("/api/logout", s.handleLogout)
+
 	// Admin routes
 	s.router.GET("/login", s.adminHandler.LoginPage)
 	s.router.POST("/login", s.adminHandler.Login)
 	s.router.GET("/dashboard", s.adminHandler.Dashboard)
 
 	log.Println("Routes set up successfully")
+}
+
+func (s *Server) handleRegister(c *gin.Context) {
+	var registerData struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&registerData); err != nil {
+		log.Printf("Error binding JSON: %v", err)
+		log.Printf("Request body: %v", c.Request.Body)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Attempting to create user with username: %s", registerData.Username)
+
+	newUser, err := s.userManager.CreateUser(c.Request.Context(), registerData.Username, registerData.Password, user.User)
+	if err != nil {
+		log.Printf("Error creating user: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		return
+	}
+
+	log.Printf("User created successfully with ID: %d", newUser.ID)
+	c.JSON(http.StatusCreated, gin.H{"message": "User created successfully", "user_id": newUser.ID})
+}
+
+func (s *Server) handleLogin(c *gin.Context) {
+	var loginData struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&loginData); err != nil {
+		log.Printf("Error binding JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Login attempt for user: %s", loginData.Username)
+
+	user, err := s.userManager.GetUserByUsername(c.Request.Context(), loginData.Username)
+	if err != nil {
+		log.Printf("Error getting user: %v", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	log.Printf("User found: ID=%d, Username=%s, UserType=%s, TwoFactorEnabled=%v",
+		user.ID, user.Username, user.UserType, user.TwoFactorEnabled)
+
+	match, err := s.userManager.VerifyPassword(user, loginData.Password)
+	if err != nil {
+		log.Printf("Error verifying password: %v", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	log.Printf("Password match: %v", match)
+
+	if !match {
+		log.Printf("Password does not match for user: %s", loginData.Username)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	// Create a new session
+	session, err := s.sessionManager.CreateSession(c.Request.Context(), user.ID)
+	if err != nil {
+		log.Printf("Error creating session: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
+	if session == nil {
+		log.Printf("Session is nil after creation")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
+	// Set session cookie
+	c.SetCookie("session_id", session.ID, int(time.Until(session.ExpiresAt).Seconds()), "/", "", false, true)
+
+	log.Printf("Login successful for user: %s, Session ID: %s", loginData.Username, session.ID)
+	c.JSON(http.StatusOK, gin.H{"message": "Login successful"})
+}
+
+func (s *Server) handleLogout(c *gin.Context) {
+	sessionID, err := c.Cookie("session_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No session found"})
+		return
+	}
+
+	err = s.sessionManager.DeleteSession(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session"})
+		return
+	}
+
+	c.SetCookie("session_id", "", -1, "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
+}
+
+// AuthMiddleware to check if the user is authenticated
+func (s *Server) AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sessionID, err := c.Cookie("session_id")
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+			c.Abort()
+			return
+		}
+
+		session, err := s.sessionManager.GetSession(c.Request.Context(), sessionID)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
+			c.Abort()
+			return
+		}
+
+		if time.Now().After(session.ExpiresAt) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired"})
+			c.Abort()
+			return
+		}
+
+		// Set user ID in the context for later use
+		c.Set("user_id", session.UserID)
+		c.Next()
+	}
 }
 
 func (s *Server) handleHello(c *gin.Context) {
@@ -182,4 +320,8 @@ func (s *Server) setCacheAndDatabase(key, value string) {
 func (s *Server) Run() error {
 	log.Printf("Starting server on %s", s.config.String("server.address"))
 	return s.router.Run(s.config.String("server.address"))
+}
+
+func (s *Server) GetDB() *pgxpool.Pool {
+	return s.db
 }
