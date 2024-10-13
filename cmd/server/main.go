@@ -18,6 +18,7 @@ func main() {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
+	log.Printf("Starting server on %s", cfg.String("server.address"))
 	if err := server.Run(); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}

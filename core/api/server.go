@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"github.com/dryack/gDiceRoll/core/dsl"
 	"github.com/dryack/gDiceRoll/core/session"
+	"github.com/dryack/gDiceRoll/core/utils"
 	"github.com/jackc/pgx/v4"
 	"html/template"
 	"log"
@@ -126,7 +128,9 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/api/register", s.handleRegister)
 	s.router.POST("/api/login", s.handleLogin)
 	s.router.POST("/api/logout", s.handleLogout)
-
+	// Dice handling
+	s.router.GET("/api/roll", s.handleDiceRoll)
+	s.router.GET("/api/encode", s.handleEncodeExpression)
 	// Admin routes
 	adminGroup := s.router.Group("/admin")
 	{
@@ -220,6 +224,47 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 	c.SetCookie("session_id", "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
+}
+
+func (s *Server) handleDiceRoll(c *gin.Context) {
+	encodedExpression := c.Query("expr")
+	if encodedExpression == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing encoded dice expression"})
+		return
+	}
+
+	expression, err := utils.DecodeExpression(encodedExpression)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	roll, err := dsl.Parse(expression)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"expression": expression,
+		"result":     roll.Result,
+		"breakdown":  roll.Breakdown,
+	})
+}
+
+func (s *Server) handleEncodeExpression(c *gin.Context) {
+	expression := c.Query("expression")
+	if expression == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing dice expression"})
+		return
+	}
+
+	encoded := utils.EncodeExpression(expression)
+
+	c.JSON(http.StatusOK, gin.H{
+		"original": expression,
+		"encoded":  encoded,
+	})
 }
 
 // AuthMiddleware to check if the user is authenticated
