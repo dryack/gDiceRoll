@@ -67,6 +67,14 @@ func main() {
 		}
 	}
 
+	// Generate directory hierarchy file
+	err = generateDirectoryHierarchy(baseDir, tempDir)
+	if err != nil {
+		fmt.Println("Error generating directory hierarchy:", err)
+	} else {
+		fmt.Println("Directory hierarchy file generated successfully")
+	}
+
 	fmt.Println("File copying process completed.")
 	fmt.Println("Files have been copied to", tempDir)
 }
@@ -108,4 +116,51 @@ func copyFileToTemp(src, tempDir, sourceDir string) error {
 
 	_, err = io.Copy(destination, source)
 	return err
+}
+
+func generateDirectoryHierarchy(baseDir, tempDir string) error {
+	hierarchyFile := filepath.Join(tempDir, "directory_hierarchy.txt")
+	file, err := os.Create(hierarchyFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.WriteString("Directory Hierarchy:\n\n")
+	if err != nil {
+		return err
+	}
+
+	for _, dir := range dirsToInclude {
+		err = filepath.Walk(filepath.Join(baseDir, dir), func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			relPath, err := filepath.Rel(baseDir, path)
+			if err != nil {
+				return err
+			}
+
+			if info.IsDir() {
+				_, err = file.WriteString(fmt.Sprintf("%s/\n", relPath))
+			} else if !shouldExclude(info.Name()) {
+				_, err = file.WriteString(fmt.Sprintf("%s\n", relPath))
+			}
+
+			return err
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, fileToInclude := range filesToInclude {
+		_, err = file.WriteString(fmt.Sprintf("%s\n", fileToInclude))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
