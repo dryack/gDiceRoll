@@ -14,7 +14,7 @@ import (
 
 var (
 	dirsToInclude  = []string{"cmd", "core", "deployments", "docs", "pkg", "scripts", "test", "web"}
-	filesToInclude = []string{"SPEC.md", "Dockerfile", "start.sh", "go.mod"}
+	filesToInclude = []string{"SPEC.md", "DICEROLL-SPEC.md", "Dockerfile", "start.sh", "go.mod"}
 	filesToExclude = []string{".env", ".gitignore", ".env_example"}
 )
 
