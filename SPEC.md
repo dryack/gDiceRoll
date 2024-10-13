@@ -44,13 +44,6 @@
 * Health check endpoints for each service instance
 ### DSL
 * Utilize PEMDAS to resolve the order of operations in a dice roll expression
-* Allow flags on a dice roll expression, which are signified by a `#` followed by two or three alphabetic characters (ie. #nz or #gnz)
-  * Multiple flags are seperated by commas
-  * Flags always terminate an expression or sub-expression (ie. 2d6-2#nz+2d6 would have a minimum value of 3)
-  * Global flags apply to each sub-expression (ie. (2d6-2)+2d6-2#gnz would have a minimum value of 2)
-    * In this case, we'd evaluate `2d6-2` twice, each time with `1` as its minimum value, and then add them together
-  * Sub-expressions are evaluated independently, from left to right
-  * Parentheses to explicitly define sub-expressions
 * The use of `k` to signify keeping the highest rolls of n dice (ie. 4d6k3 would mean keeping the three highest rolls out of 4)
 * Useless operations will be automatically deleted (ie. +/-0 has no meaning)
 * Definitions that include a divide-by-zero will return an error message, not a result

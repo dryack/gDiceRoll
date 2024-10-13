@@ -2,44 +2,72 @@ package dsl
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
-	"strconv"
-	"strings"
 )
 
-type DiceRoll struct {
-	Expression string
-	Result     int
-	Breakdown  []int
+// Parse takes a string input and returns a parsed Expression
+func Parse(input string) (*Expression, error) {
+	log.Printf("Attempting to parse input: %s", input)
+	expr, err := DiceParser.ParseString("", input)
+	if err != nil {
+		log.Printf("Parsing error: %v", err)
+		return nil, fmt.Errorf("parsing error: %w", err)
+	}
+	log.Printf("Successfully parsed input. Result: %+v", expr)
+	if expr.Dice != nil {
+		log.Printf("Dice details - Count: %v, Sides: %s", expr.Dice.Count, expr.Dice.Sides.Value)
+	} else if expr.Number != nil {
+		log.Printf("Number: %d", *expr.Number)
+	}
+	return expr, nil
 }
 
-func Parse(expression string) (*DiceRoll, error) {
-	parts := strings.Split(expression, "d")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid dice expression")
+// EvaluateExpression evaluates a parsed Expression and returns the result
+func EvaluateExpression(expr *Expression) (int, error) {
+	if expr.Number != nil {
+		return *expr.Number, nil
+	}
+	if expr.Dice != nil {
+		return evaluateDice(expr.Dice)
+	}
+	return 0, fmt.Errorf("invalid expression")
+}
+
+// evaluateDice evaluates a Dice structure and returns the result
+func evaluateDice(dice *Dice) (int, error) {
+	count := 1
+	if dice.Count != nil {
+		count = *dice.Count
 	}
 
-	count, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("invalid dice count")
-	}
-
-	sides, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("invalid dice sides")
+	var sides int
+	if dice.Sides.Value == "%" {
+		sides = 100
+	} else {
+		var err error
+		sides, err = ParseInt(dice.Sides.Value)
+		if err != nil {
+			return 0, fmt.Errorf("invalid dice sides: %s", dice.Sides.Value)
+		}
 	}
 
 	result := 0
-	breakdown := make([]int, count)
 	for i := 0; i < count; i++ {
-		roll := rand.Intn(sides) + 1
-		result += roll
-		breakdown[i] = roll
+		result += rand.Intn(sides) + 1
 	}
 
-	return &DiceRoll{
-		Expression: expression,
-		Result:     result,
-		Breakdown:  breakdown,
-	}, nil
+	return result, nil
+}
+
+// ParseInt is a helper function to parse a string to an integer
+func ParseInt(s string) (int, error) {
+	var result int
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("invalid integer: %s", s)
+		}
+		result = result*10 + int(ch-'0')
+	}
+	return result, nil
 }
