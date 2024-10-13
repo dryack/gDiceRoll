@@ -27,14 +27,11 @@ type Server struct {
 	db             *pgxpool.Pool
 	userManager    *user.UserManager
 	sessionManager *session.SessionManager
+	cleanupCtx     context.Context
+	cleanupCancel  context.CancelFunc
 }
 
 func NewServer(cfg *koanf.Koanf) (*Server, error) {
-	adminHandler, err := admin.NewAdminHandler()
-	if err != nil {
-		return nil, err
-	}
-
 	router := gin.Default()
 
 	// Load templates
@@ -50,7 +47,7 @@ func NewServer(cfg *koanf.Koanf) (*Server, error) {
 	// Test the connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = cache.Ping(ctx).Result()
+	_, err := cache.Ping(ctx).Result()
 	if err != nil {
 		fmt.Printf("Error connecting to Dragonfly: %v\n", err)
 		// Don't return here, allow the server to start without cache
@@ -76,8 +73,25 @@ func NewServer(cfg *koanf.Koanf) (*Server, error) {
 		fmt.Println("Successfully connected to Postgres")
 	}
 
+	accessSecret := []byte(cfg.String("jwt.access.secret"))
+	refreshSecret := []byte(cfg.String("jwt.refresh.secret"))
+
+	if len(accessSecret) == 0 || len(refreshSecret) == 0 {
+		return nil, fmt.Errorf("JWT secrets are not properly configured")
+	}
+
 	userManager := user.NewUserManager(dbPool)
-	sessionManager := session.NewSessionManager(cache, dbPool)
+	sessionManager, err := session.NewSessionManager(cache, dbPool, cfg.String("jwt.access.secret"), cfg.String("jwt.refresh.secret"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session manager: %v", err)
+	}
+
+	adminHandler, err := admin.NewAdminHandler(userManager, sessionManager)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create admin handler: %v", err)
+	}
+
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 
 	s := &Server{
 		config:         cfg,
@@ -87,8 +101,13 @@ func NewServer(cfg *koanf.Koanf) (*Server, error) {
 		db:             dbPool,
 		userManager:    userManager,
 		sessionManager: sessionManager,
+		cleanupCtx:     cleanupCtx,
+		cleanupCancel:  cleanupCancel,
 	}
 	s.setupRoutes()
+	// Start the cleanup task
+	s.sessionManager.StartCleanupTask(cleanupCtx, 1*time.Hour) // Run cleanup every hour
+
 	return s, nil
 }
 
@@ -109,9 +128,12 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/api/logout", s.handleLogout)
 
 	// Admin routes
-	s.router.GET("/login", s.adminHandler.LoginPage)
-	s.router.POST("/login", s.adminHandler.Login)
-	s.router.GET("/dashboard", s.adminHandler.Dashboard)
+	adminGroup := s.router.Group("/admin")
+	{
+		adminGroup.GET("/login", s.adminHandler.LoginPage)
+		adminGroup.POST("/login", s.adminHandler.Login)
+		adminGroup.GET("/dashboard", s.AuthMiddleware(), s.adminHandler.Dashboard)
+	}
 
 	log.Println("Routes set up successfully")
 }
@@ -149,57 +171,38 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&loginData); err != nil {
-		log.Printf("Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	log.Printf("Login attempt for user: %s", loginData.Username)
-
 	user, err := s.userManager.GetUserByUsername(c.Request.Context(), loginData.Username)
 	if err != nil {
-		log.Printf("Error getting user: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
-
-	log.Printf("User found: ID=%d, Username=%s, UserType=%s, TwoFactorEnabled=%v",
-		user.ID, user.Username, user.UserType, user.TwoFactorEnabled)
 
 	match, err := s.userManager.VerifyPassword(user, loginData.Password)
-	if err != nil {
-		log.Printf("Error verifying password: %v", err)
+	if err != nil || !match {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	log.Printf("Password match: %v", match)
-
-	if !match {
-		log.Printf("Password does not match for user: %s", loginData.Username)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	// Create a new session
-	session, err := s.sessionManager.CreateSession(c.Request.Context(), user.ID)
+	// Create a new session with JWTs
+	session, accessToken, refreshToken, err := s.sessionManager.CreateSession(c.Request.Context(), user.ID)
 	if err != nil {
-		log.Printf("Error creating session: %v", err)
+		log.Printf("Failed to create session: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
 	}
 
-	if session == nil {
-		log.Printf("Session is nil after creation")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-		return
-	}
+	// Set refresh token as an HTTP-only cookie
+	c.SetCookie("refresh_token", refreshToken, int(time.Until(session.ExpiresAt).Seconds()), "/", "", false, true)
 
-	// Set session cookie
-	c.SetCookie("session_id", session.ID, int(time.Until(session.ExpiresAt).Seconds()), "/", "", false, true)
-
-	log.Printf("Login successful for user: %s, Session ID: %s", loginData.Username, session.ID)
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful"})
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Login successful",
+		"access_token": accessToken,
+		"session_id":   session.ID,
+	})
 }
 
 func (s *Server) handleLogout(c *gin.Context) {
@@ -222,29 +225,52 @@ func (s *Server) handleLogout(c *gin.Context) {
 // AuthMiddleware to check if the user is authenticated
 func (s *Server) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Check for session ID cookie first
 		sessionID, err := c.Cookie("session_id")
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
-			c.Abort()
-			return
+		if err == nil {
+			// Session ID found, verify it
+			session, err := s.sessionManager.GetSession(c.Request.Context(), sessionID)
+			if err == nil {
+				// Session found, check if it's expired
+				if time.Now().After(session.ExpiresAt) {
+					// Session has expired, try to refresh
+					refreshToken, _ := c.Cookie("refresh_token")
+					if refreshToken != "" {
+						newSession, newAccessToken, newRefreshToken, err := s.sessionManager.RefreshSession(c.Request.Context(), refreshToken)
+						if err == nil {
+							// Successfully refreshed, update cookies and continue
+							c.SetCookie("session_id", newSession.ID, int(time.Until(newSession.ExpiresAt).Seconds()), "/", "", false, true)
+							c.SetCookie("access_token", newAccessToken, int(15*time.Minute.Seconds()), "/", "", false, false)
+							c.SetCookie("refresh_token", newRefreshToken, int(24*time.Hour.Seconds()), "/", "", false, true)
+							c.Set("user_id", newSession.UserID)
+							c.Next()
+							return
+						}
+					}
+				} else {
+					// Session is valid and not expired
+					c.Set("user_id", session.UserID)
+					c.Next()
+					return
+				}
+			}
 		}
 
-		session, err := s.sessionManager.GetSession(c.Request.Context(), sessionID)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
-			c.Abort()
-			return
+		// If session check failed, try JWT
+		accessToken, err := c.Cookie("access_token")
+		if err == nil {
+			claims, err := s.sessionManager.VerifyAccessToken(accessToken)
+			if err == nil {
+				// JWT is valid
+				c.Set("user_id", claims.UserID)
+				c.Next()
+				return
+			}
 		}
 
-		if time.Now().After(session.ExpiresAt) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired"})
-			c.Abort()
-			return
-		}
-
-		// Set user ID in the context for later use
-		c.Set("user_id", session.UserID)
-		c.Next()
+		// If we've reached here, authentication has failed
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		c.Abort()
 	}
 }
 
@@ -318,6 +344,8 @@ func (s *Server) setCacheAndDatabase(key, value string) {
 }
 
 func (s *Server) Run() error {
+	defer s.cleanupCancel() // Ensure cleanup task is stopped when server stops
+
 	log.Printf("Starting server on %s", s.config.String("server.address"))
 	return s.router.Run(s.config.String("server.address"))
 }

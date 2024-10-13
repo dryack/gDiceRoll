@@ -195,3 +195,6 @@ Explanation: This alternative has a more peaked distribution. It's more likely t
 * Use existing records from cache or database when available
 * Implement a simple versioning or timestamping system for cached and database records
 * No additional leader election mechanism required
+### Additional Ideas For the Future
+* https://kostyay.com/grpc-5-years-later-is-it-still-worth-it-b181a3b2b73b?gi=8f1678a6e2c5
+* 
