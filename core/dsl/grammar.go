@@ -22,6 +22,13 @@ type Sides struct {
 	Value string `@("%" | Int)`
 }
 
+type Result struct {
+	Expression string      // original expression string
+	Parsed     *Expression // parsed expression string
+	Value      int
+	Breakdown  []int // The individual die rolls
+}
+
 // dslLexer defines the lexer rules for our DSL
 var dslLexer = lexer.MustSimple([]lexer.SimpleRule{
 	{"Int", `\d+`},

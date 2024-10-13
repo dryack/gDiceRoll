@@ -6,36 +6,46 @@ import (
 	"math/rand"
 )
 
-// Parse takes a string input and returns a parsed Expression
-func Parse(input string) (*Expression, error) {
+// Parse takes a string input and returns a Result
+func Parse(input string) (*Result, error) {
 	log.Printf("Attempting to parse input: %s", input)
 	expr, err := DiceParser.ParseString("", input)
 	if err != nil {
 		log.Printf("Parsing error: %v", err)
 		return nil, fmt.Errorf("parsing error: %w", err)
 	}
-	log.Printf("Successfully parsed input. Result: %+v", expr)
-	if expr.Dice != nil {
-		log.Printf("Dice details - Count: %v, Sides: %s", expr.Dice.Count, expr.Dice.Sides.Value)
-	} else if expr.Number != nil {
-		log.Printf("Number: %d", *expr.Number)
+	log.Printf("Successfully parsed input. Expression: %+v", expr)
+
+	// Evaluate the expression
+	value, breakdown, err := evaluateExpression(expr)
+	if err != nil {
+		return nil, fmt.Errorf("evaluation error: %w", err)
 	}
-	return expr, nil
+
+	result := &Result{
+		Expression: input,
+		Parsed:     expr,
+		Value:      value,
+		Breakdown:  breakdown,
+	}
+
+	log.Printf("Evaluation result: %+v", result)
+	return result, nil
 }
 
-// EvaluateExpression evaluates a parsed Expression and returns the result
-func EvaluateExpression(expr *Expression) (int, error) {
+// evaluateExpression evaluates a parsed Expression and returns the result and breakdown
+func evaluateExpression(expr *Expression) (int, []int, error) {
 	if expr.Number != nil {
-		return *expr.Number, nil
+		return *expr.Number, []int{*expr.Number}, nil
 	}
 	if expr.Dice != nil {
 		return evaluateDice(expr.Dice)
 	}
-	return 0, fmt.Errorf("invalid expression")
+	return 0, nil, fmt.Errorf("invalid expression")
 }
 
-// evaluateDice evaluates a Dice structure and returns the result
-func evaluateDice(dice *Dice) (int, error) {
+// evaluateDice evaluates a Dice structure and returns the result and breakdown
+func evaluateDice(dice *Dice) (int, []int, error) {
 	count := 1
 	if dice.Count != nil {
 		count = *dice.Count
@@ -48,16 +58,19 @@ func evaluateDice(dice *Dice) (int, error) {
 		var err error
 		sides, err = ParseInt(dice.Sides.Value)
 		if err != nil {
-			return 0, fmt.Errorf("invalid dice sides: %s", dice.Sides.Value)
+			return 0, nil, fmt.Errorf("invalid dice sides: %s", dice.Sides.Value)
 		}
 	}
 
 	result := 0
+	breakdown := make([]int, count)
 	for i := 0; i < count; i++ {
-		result += rand.Intn(sides) + 1
+		roll := rand.Intn(sides) + 1
+		result += roll
+		breakdown[i] = roll
 	}
 
-	return result, nil
+	return result, breakdown, nil
 }
 
 // ParseInt is a helper function to parse a string to an integer
