@@ -15,7 +15,7 @@ import (
 var (
 	dirsToInclude  = []string{"cmd", "core", "deployments", "docs", "pkg", "scripts", "test", "web"}
 	filesToInclude = []string{"SPEC.md", "DICEROLL-SPEC.md", "Dockerfile", "start.sh", "go.mod"}
-	filesToExclude = []string{".env", ".gitignore", ".env_example"}
+	filesToExclude = []string{".env", ".gitignore", ".env_example", "cookies.txt"}
 )
 
 func main() {
