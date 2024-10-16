@@ -1,13 +1,16 @@
 package dsl
 
 import (
+	"context"
 	"fmt"
+	"github.com/dryack/gDiceRoll/core/statistics"
 	"log"
 	"math/rand"
+	"time"
 )
 
 // Parse takes a string input and returns a Result
-func Parse(input string) (*Result, error) {
+func Parse(ctx context.Context, input string, cache Cache, db Database) (*Result, error) {
 	log.Printf("Attempting to parse input: %s", input)
 	expr, err := DiceParser.ParseString("", input)
 	if err != nil {
@@ -16,18 +19,70 @@ func Parse(input string) (*Result, error) {
 	}
 	log.Printf("Successfully parsed input. Expression: %+v", expr)
 
-	// Evaluate the expression
+	// Check cache first
+	cachedResult, err := cache.Get(ctx, input)
+	if err == nil {
+		// Cache hit
+		value, breakdown, _ := evaluateExpression(expr)
+		return &Result{
+			Expression: input,
+			Parsed:     expr,
+			Value:      value,
+			Breakdown:  breakdown,
+			Statistics: cachedResult.Statistics,
+			Source:     SourceCache,
+		}, nil
+	}
+
+	// Check database if not in cache
+	dbResult, err := db.Get(ctx, input)
+	if err == nil {
+		// Database hit
+		value, breakdown, _ := evaluateExpression(expr)
+		// Asynchronously update cache
+		go cache.Set(ctx, input, dbResult)
+		return &Result{
+			Expression: input,
+			Parsed:     expr,
+			Value:      value,
+			Breakdown:  breakdown,
+			Statistics: dbResult.Statistics,
+			Source:     SourceDatabase,
+		}, nil
+	}
+
+	// If not found in cache or database, calculate
 	value, breakdown, err := evaluateExpression(expr)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation error: %w", err)
 	}
+
+	// Perform Monte Carlo simulation
+	simCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	simFunc := func() int {
+		simValue, _, _ := evaluateExpression(expr)
+		return simValue
+	}
+
+	stats := statistics.MonteCarloSimulation(simCtx, simFunc, 1000000)
 
 	result := &Result{
 		Expression: input,
 		Parsed:     expr,
 		Value:      value,
 		Breakdown:  breakdown,
+		Statistics: stats,
+		Source:     SourceFreshCalculation,
 	}
+
+	// Asynchronously update cache and database
+	cachedResult = &CachedResult{Statistics: stats}
+	go func() {
+		cache.Set(context.Background(), input, cachedResult)
+		db.Set(context.Background(), input, cachedResult)
+	}()
 
 	log.Printf("Evaluation result: %+v", result)
 	return result, nil
